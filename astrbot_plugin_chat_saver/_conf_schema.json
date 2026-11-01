@@ -1,0 +1,62 @@
+{
+  "save_path": {
+    "description": "对话存档根目录",
+    "type": "string",
+    "hint": "存放对话存档文件的根目录路径。相对于插件数据目录。",
+    "default": "ChatSaver_Data"
+  },
+  "max_file_size_kb": {
+    "description": "单文件最大大小 (KB)",
+    "type": "int",
+    "hint": "单个存档文件超过此大小时自动创建新文件。默认100KB。",
+    "default": 100
+  },
+  "enable_dedup": {
+    "description": "启用去重",
+    "type": "bool",
+    "hint": "开启后对完全相同的消息内容进行去重。",
+    "default": true
+  },
+  "min_important_length": {
+    "description": "重要事件最小文本长度",
+    "type": "int",
+    "hint": "文本长度超过此值的消息才会被视为重要事件并保存。设为0则保存所有消息。",
+    "default": 0
+  },
+  "important_keywords": {
+    "description": "重要事件关键词列表",
+    "type": "list",
+    "hint": "包含以下关键词的消息会被视为重要事件（即使长度不足）。例如：[\"重要\", \"记住\", \"别忘了\", \"关键\"]",
+    "default": ["重要", "记住", "别忘了", "关键", "约定", "承诺"]
+  },
+  "enable_ai_filter": {
+    "description": "启用AI智能过滤",
+    "type": "bool",
+    "hint": "开启后会使用AI判断消息是否重要。会增加Token消耗。",
+    "default": false
+  },
+  "enable_daily_summary": {
+    "description": "启用每日总结",
+    "type": "bool",
+    "hint": "开启后每天0点会自动对当天的对话进行AI总结。",
+    "default": true
+  },
+  "daily_summary_prompt": {
+    "description": "每日总结提示词",
+    "type": "text",
+    "hint": "用于AI每日总结的提示词模板。",
+    "default": "请对以下今天的对话内容进行总结，提取出重要的事件、关键信息、约定和值得记住的内容。要求：1.简洁明了 2.按时间顺序 3.标注涉及的人"
+  },
+  "save_ai_response": {
+    "description": "保存AI回复",
+    "type": "bool",
+    "hint": "开启后会同时保存AI机器人的回复内容。",
+    "default": true
+  },
+  "ignore_bot_self": {
+    "description": "忽略bot自身的消息",
+    "type": "bool",
+    "hint": "开启后不会保存bot自己发送的消息，避免重复存档。",
+    "default": true
+  }
+}

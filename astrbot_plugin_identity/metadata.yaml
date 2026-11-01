@@ -1,0 +1,28 @@
+name: astrbot_plugin_identity
+author: 玄
+desc: 身份认同插件 - 基于QQ号的身份标签管理与LLM提示词注入
+short_desc: 身份管理与标签注入
+version: "2.0.1"
+repo: ""
+astrbot_version: ">=4.0.0"
+
+extra:
+  config:
+    - key: admin_ids
+      type: list
+      default_value:
+        - "1491867183"
+      description: "管理员QQ号列表，拥有全部管理命令权限，每行一个"
+    - key: success_prompt
+      type: string
+      default_value: "用户身份已确认。请根据用户标签回复。"
+      description: "身份标签注入 LLM 时的提示词前缀"
+    - key: auto_register_enabled
+      type: bool
+      default_value: true
+      description: "是否自动注册新用户为「普通用户」。关闭后未注册用户的身份消息不会注入 LLM"
+
+pages:
+  - name: identity-admin
+    title: 身份管理
+    entry_file: index.html

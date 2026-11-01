@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>身份管理</title>
+  <style>
+    * { margin:0; padding:0; box-sizing:border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background:#1a1a2e; color:#eee; min-height:100vh; }
+    .container { max-width:900px; margin:0 auto; padding:20px; }
+    h1 { font-size:1.5rem; margin-bottom:20px; color:#e94560; }
+    h1 span { color:#0f3460; background:#16213e; padding:2px 8px; border-radius:4px; font-size:0.8rem; margin-left:8px; }
+
+    .toolbar { display:flex; gap:10px; margin-bottom:16px; flex-wrap:wrap; align-items:center; }
+    .btn { padding:8px 16px; border:none; border-radius:6px; cursor:pointer; font-size:14px; transition:.2s; }
+    .btn-primary { background:#e94560; color:#fff; }
+    .btn-primary:hover { background:#d63851; }
+    .btn-secondary { background:#16213e; color:#eee; border:1px solid #333; }
+    .btn-secondary:hover { background:#1a1a40; }
+    .btn-danger { background:#c0392b; color:#fff; }
+    .btn-danger:hover { background:#a93226; }
+    .btn-sm { padding:4px 10px; font-size:12px; }
+    .stats { font-size:13px; color:#888; margin-left:auto; }
+    .search-box { padding:6px 10px; border-radius:6px; border:1px solid #333; background:#1a1a2e; color:#eee; font-size:13px; outline:none; min-width:180px; }
+    .search-box:focus { border-color:#e94560; }
+    .theme-btn { font-size:12px; padding:6px 12px; }
+
+    table { width:100%; border-collapse:collapse; background:#16213e; border-radius:8px; overflow:hidden; }
+    th, td { padding:10px 14px; text-align:left; border-bottom:1px solid #1a1a3e; font-size:13px; }
+    th { background:#0f3460; color:#e94560; font-weight:600; }
+    tr:hover td { background:#1a1a4e; }
+    .empty { text-align:center; padding:30px; color:#666; }
+
+    .modal-overlay { display:none; position:fixed; top:0;left:0;width:100%;height:100%; background:rgba(0,0,0,0.6); z-index:100; justify-content:center;align-items:center; }
+    .modal-overlay.active { display:flex; }
+    .modal { background:#16213e; border-radius:12px; padding:24px; width:420px; max-width:90vw; }
+    .modal h3 { margin-bottom:16px; color:#e94560; }
+    .form-group { margin-bottom:12px; }
+    .form-group label { display:block; font-size:12px; color:#888; margin-bottom:4px; }
+    .form-group input, .form-group textarea { width:100%; padding:8px 10px; border:1px solid #333; border-radius:6px; background:#1a1a2e; color:#eee; font-size:13px; }
+    .form-group textarea { resize:vertical; min-height:60px; }
+    .modal-actions { display:flex; gap:8px; justify-content:flex-end; margin-top:16px; }
+
+    .toast { position:fixed; bottom:20px; right:20px; padding:10px 18px; border-radius:8px; font-size:13px; z-index:200; opacity:0; transition:.3s; }
+    .toast.show { opacity:1; }
+    .toast-success { background:#27ae60; }
+    .toast-error { background:#c0392b; }
+
+    /* === 白色主题 === */
+    body.theme-white { background:#f4f6fb; color:#222; }
+    body.theme-white h1 { color:#0f3460; }
+    body.theme-white h1 span { background:#e94560; color:#fff; }
+    body.theme-white .search-box { background:#fff; color:#222; border-color:#ccc; }
+    body.theme-white table { background:#fff; border:1px solid #e2e6ec; }
+    body.theme-white th { background:#e94560; color:#fff; }
+    body.theme-white td { border-bottom:1px solid #e2e6ec; }
+    body.theme-white tr:hover td { background:#f8f9fb; }
+    body.theme-white .btn-secondary { background:#fff; color:#333; border:1px solid #ccc; }
+    body.theme-white .btn-secondary:hover { background:#f0f0f0; }
+    body.theme-white .modal { background:#fff; border:1px solid #ddd; color:#222; }
+    body.theme-white .modal h3 { color:#e94560; }
+    body.theme-white .form-group input,
+    body.theme-white .form-group textarea { background:#f8f9fb; color:#222; border-color:#ccc; }
+    body.theme-white .stats { color:#666; }
+    body.theme-white .empty { color:#aaa; }
+    body.theme-white .toast { color:#fff; }
+  </style>
+</head>
+<body class="theme-white">
+<div class="container">
+  <h1>🔐 身份管理 <span>v2.0.1</span></h1>
+
+  <div class="toolbar">
+    <button class="btn btn-primary" onclick="openModal('add')">+ 添加身份</button>
+    <button class="btn btn-secondary" onclick="loadData()">🔄 刷新</button>
+    <input class="search-box" id="searchInput" placeholder="🔍 搜索 QQ / 昵称 / 身份…" oninput="filterTable(this.value)">
+    <button class="btn btn-secondary theme-btn" onclick="toggleTheme()" id="themeBtn">🌙 深色</button>
+    <span class="stats" id="stats">加载中…</span>
+  </div>
+
+  <table>
+    <thead>
+      <tr><th>QQ号</th><th>昵称</th><th>身份</th><th>提示词</th><th>操作</th></tr>
+    </thead>
+    <tbody id="tableBody"></tbody>
+  </table>
+  <div id="empty" class="empty" style="display:none">📭 暂无身份记录</div>
+</div>
+
+<!-- 弹窗 -->
+<div class="modal-overlay" id="modalOverlay">
+  <div class="modal">
+    <h3 id="modalTitle">添加身份</h3>
+    <div class="form-group">
+      <label>QQ号</label>
+      <input id="fldUserId" placeholder="例如 1491867183">
+    </div>
+    <div class="form-group">
+      <label>昵称</label>
+      <input id="fldNick" placeholder="例如 玄">
+    </div>
+    <div class="form-group">
+      <label>身份标签</label>
+      <input id="fldIdentity" placeholder="例如 主人 / 管理员 / 普通用户">
+    </div>
+    <div class="form-group">
+      <label>个性提示词（可选）</label>
+      <textarea id="fldPrompt" placeholder="注入到 LLM 的额外提示词"></textarea>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeModal()">取消</button>
+      <button class="btn btn-primary" id="btnSubmit" onclick="submitForm()">确认</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script src="/api/plugin/page/bridge-sdk.js"></script>
+<script src="./app.js"></script>
+</body>
+</html>

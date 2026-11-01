@@ -1,0 +1,22 @@
+{
+  "admin_ids": {
+    "description": "管理员QQ号列表",
+    "type": "list",
+    "hint": "拥有全部管理命令权限的QQ号，每行一个",
+    "default": [
+      "1491867183"
+    ]
+  },
+  "success_prompt": {
+    "description": "身份标签注入提示词前缀",
+    "type": "string",
+    "hint": "身份标签注入到 LLM 时加在标签前的提示文字",
+    "default": "用户身份已确认。请根据用户标签回复。"
+  },
+  "auto_register_enabled": {
+    "description": "是否自动注册新用户",
+    "type": "bool",
+    "hint": "开启后新用户自动注册为「普通用户」。关闭后未注册用户不会注入身份信息",
+    "default": true
+  }
+}

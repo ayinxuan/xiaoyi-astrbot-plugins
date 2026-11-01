@@ -1,0 +1,986 @@
+import os
+import json
+import hashlib
+import asyncio
+from datetime import datetime, date, timedelta
+from pathlib import Path
+from typing import List, Dict, Optional
+
+from astrbot.api.event import filter, AstrMessageEvent
+from astrbot.core.star.filter.event_message_type import EventMessageType
+from astrbot.api.star import Context, Star, register
+from astrbot.api import logger
+from astrbot.api.provider import LLMResponse
+
+
+PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+@register("chat_saver", "小伊", "智能对话存档插件，自动保存并管理对话记录", "1.0.0")
+class ChatSaverPlugin(Star):
+    def __init__(self, context: Context, config: any = None):
+        super().__init__(context)
+        self.context = context
+        self.config = config if config else {}
+
+        # 配置读取
+        self.save_path = self.config.get("save_path", "ChatSaver_Data")
+        self.max_file_size = int(self.config.get("max_file_size_kb", 100)) * 1024
+        self.enable_dedup = bool(self.config.get("enable_dedup", True))
+        self.min_important = int(self.config.get("min_important_length", 0))
+        self.important_keywords = self.config.get("important_keywords", ["重要", "记住", "别忘了", "关键", "约定", "承诺"])
+        self.enable_ai_filter = bool(self.config.get("enable_ai_filter", False))
+        self.enable_daily_summary = bool(self.config.get("enable_daily_summary", True))
+        self.summary_prompt = self.config.get("daily_summary_prompt", "请对以下今天的对话内容进行总结，提取出重要的事件、关键信息、约定和值得记住的内容。要求：1.简洁明了 2.按时间顺序 3.标注涉及的人")
+        self.save_ai_response = bool(self.config.get("save_ai_response", True))
+        self.ignore_bot_self = bool(self.config.get("ignore_bot_self", True))
+        self.retention_days = int(self.config.get("retention_days", 7))  # 原始记录保留天数
+        self.summary_model_id = self.config.get("summary_model_id", "")  # 总结专用模型ID（留空则用当前对话模型）
+        # 插件数据目录
+        self.plugin_data_dir = f"/root/data/plugin_data/astrbot_plugin_chat_saver"
+        self.data_root = os.path.join(self.plugin_data_dir, self.save_path)
+        self.longterm_dir = os.path.join(self.data_root, "_longterm")  # 长期记录目录
+
+        # 已处理消息的哈希缓存（用于去重）
+        self._seen_hashes = set()
+
+        # 确保目录存在
+        os.makedirs(self.data_root, exist_ok=True)
+
+        # 启动时加载已有的哈希（从已有文件中读取，避免重复）
+        logger.info(f"[ChatSaver] 对话存档插件已加载，数据目录：{self.data_root}")
+
+    async def _register_cron(self):
+        """注册每日0点的总结定时任务"""
+        try:
+            if self.context.cron_manager and self.enable_daily_summary:
+                await self.context.cron_manager.add_basic_job(
+                    name="ChatSaver每日总结",
+                    cron_expression="0 0 * * *",
+                    handler=self._daily_summary_cron_handler,
+                    description="每日0点自动总结对话存档",
+                    timezone="Asia/Shanghai",
+                    persistent=True,
+                )
+                logger.info("[ChatSaver] 已注册每日总结定时任务 (0:00)")
+        except Exception as e:
+            logger.warning(f"[ChatSaver] 注册定时任务失败: {e}，将使用备用方式")
+
+    async def _daily_summary_cron_handler(self, job=None):
+        """定时任务回调"""
+        await self._daily_summary_task()
+
+    def _get_conv_dir(self, event: AstrMessageEvent) -> tuple[str, str, str]:
+        """获取会话目录路径，返回 (会话目录, 会话类型标签, 会话标识)"""
+        msg_type = event.get_message_type()
+        sender_id = event.get_sender_id() or "unknown"
+        sender_name = event.get_sender_name() or sender_id
+        group_id = event.get_group_id() or ""
+
+        if msg_type.value == "FriendMessage":
+            # 私聊：只用用户ID，昵称随意变
+            conv_dir = os.path.join(self.data_root, "私聊", f"{sender_id}")
+            return conv_dir, "私聊", sender_id
+        else:
+            # 群聊：群ID/只用用户ID，昵称随意变
+            group_name = f"群_{group_id}" if group_id else "未知群"
+            conv_dir = os.path.join(self.data_root, "群聊", f"{group_id}_{group_name}", f"{sender_id}")
+            return conv_dir, "群聊", group_id
+
+    def _get_message_hash(self, text: str) -> str:
+        """生成消息哈希用于去重"""
+        return hashlib.md5(text.encode("utf-8")).hexdigest()
+
+    def _should_save(self, text: str) -> bool:
+        """判断是否应该保存该消息"""
+        if not text or not text.strip():
+            return False
+
+        # 去重检查
+        if self.enable_dedup:
+            h = self._get_message_hash(text)
+            if h in self._seen_hashes:
+                return False
+            self._seen_hashes.add(h)
+
+        # 长度过滤
+        if self.min_important > 0 and len(text) < self.min_important:
+            # 检查关键词
+            for kw in self.important_keywords:
+                if kw in text:
+                    return True
+            return False
+
+        return True
+
+    def _get_next_file(self, conv_dir: str) -> str:
+        """获取当前应该写入的文件路径（自动轮转）"""
+        os.makedirs(conv_dir, exist_ok=True)
+        today = date.today().isoformat()  # 2026-06-03
+
+        # 查找今天的文件
+        idx = 1
+        while True:
+            fname = f"{today}_{idx}.txt"
+            fpath = os.path.join(conv_dir, fname)
+            if not os.path.exists(fpath):
+                return fpath
+            if os.path.getsize(fpath) < self.max_file_size:
+                return fpath
+            idx += 1
+
+    def _format_message(self, text: str, sender_name: str, is_ai: bool = False) -> str:
+        """格式化消息文本"""
+        now = datetime.now().strftime("%H:%M:%S")
+        tag = "🤖 AI" if is_ai else "👤 用户"
+        return f"[{now}] {tag} {sender_name}: {text}\n"
+
+    async def _save_text(self, conv_dir: str, text: str, sender_name: str, is_ai: bool = False):
+        """保存文本到文件"""
+        if not self._should_save(text):
+            return
+
+        fpath = self._get_next_file(conv_dir)
+        line = self._format_message(text, sender_name, is_ai)
+        try:
+            with open(fpath, "a", encoding="utf-8") as f:
+                f.write(line)
+        except Exception as e:
+            logger.error(f"[ChatSaver] 保存消息失败: {e}")
+
+    async def _get_provider_and_summarize(self, content: str, prompt: str) -> str:
+        """使用指定模型或当前对话模型进行AI总结"""
+        try:
+            # 优先使用配置的专用模型ID
+            provider_id = self.summary_model_id.strip()
+            if provider_id:
+                provider = self.context.get_provider_by_id(provider_id)
+                if not provider:
+                    logger.warning(f"[ChatSaver] 未找到指定的总结模型 {provider_id}，回退到当前对话模型")
+                    provider = self.context.get_using_provider()
+            else:
+                provider = self.context.get_using_provider()
+
+            if not provider:
+                return "⚠️ 未找到可用的对话模型"
+
+            llm_resp = await self.context.llm_generate(
+                chat_provider_id=provider.meta().id,
+                prompt=f"{prompt}\n\n{content}",
+                system_prompt="你是一个对话存档助手，请根据要求进行总结。",
+            )
+            if llm_resp and llm_resp.role == "assistant" and llm_resp.completion_text:
+                return llm_resp.completion_text
+            return "⚠️ AI返回为空"
+        except Exception as e:
+            logger.error(f"[ChatSaver] AI总结失败: {e}")
+            return f"⚠️ AI总结出错: {str(e)}"
+
+    # ===================== 插件生命周期 =====================
+
+    @filter.on_astrbot_loaded()
+    async def on_astrbot_loaded(self):
+        """AstrBot加载完成后注册定时任务"""
+        await self._register_cron()
+
+    # ===================== 事件监听器 =====================
+
+    @filter.on_llm_response()
+    async def on_llm_response(self, event: AstrMessageEvent, llm_response: LLMResponse, *args, **kwargs):
+        """监听AI回复并保存"""
+        if not self.save_ai_response:
+            return
+        if not llm_response or not llm_response.completion_text:
+            return
+
+        content = llm_response.completion_text.strip()
+        if not content:
+            return
+
+        conv_dir, _, _ = self._get_conv_dir(event)
+        await self._save_text(conv_dir, content, "AI助手", is_ai=True)
+
+    async def _handle_message_save(self, event: AstrMessageEvent):
+        """处理消息保存（供装饰器和命令共用）"""
+        text = event.get_message_str().strip()
+        if not text:
+            return
+
+        # 过滤bot自己的消息
+        if self.ignore_bot_self:
+            self_id = event.get_self_id()
+            sender_id = event.get_sender_id()
+            if self_id and sender_id and self_id == sender_id:
+                return
+
+        sender_name = event.get_sender_name() or "未知用户"
+        conv_dir, conv_type, _ = self._get_conv_dir(event)
+        await self._save_text(conv_dir, text, sender_name, is_ai=False)
+
+    # 使用 event_message_type(ALL) 监听所有消息平台的消息
+    @filter.event_message_type(EventMessageType.ALL)
+    async def on_adapter_message(self, event: AstrMessageEvent):
+        """监听所有消息平台的消息并保存"""
+        await self._handle_message_save(event)
+
+    @filter.after_message_sent()
+    async def on_after_message_sent(self, event: AstrMessageEvent):
+        """监听bot发送消息后也自动存档"""
+        if not self.save_ai_response:
+            return
+        text = event.get_message_str().strip()
+        if not text:
+            return
+        sender_name = event.get_sender_name() or "小伊"
+        conv_dir, _, _ = self._get_conv_dir(event)
+        await self._save_text(conv_dir, text, sender_name, is_ai=True)
+
+    # ===================== 命令处理器 =====================
+
+    @filter.command("saver")
+    async def saver_cmd(self, event: AstrMessageEvent):
+        """对话存档器命令组。用法：
+        /saver search <关键词> - 搜索存档
+        /saver write <内容> - 手动写入事件
+        /saver today - 查看今天的存档
+        /saver summary - 手动触发今日总结"""
+        pass
+
+    @filter.command("saver_search")
+    async def saver_search(self, event: AstrMessageEvent, keyword: str):
+        """搜索存档内容"""
+        keyword = keyword.strip()
+        if not keyword:
+            yield event.plain_result("请输入要搜索的关键词喵~")
+            return
+
+        results = []
+        conv_dir, _, _ = self._get_conv_dir(event)
+
+        # 在当前会话目录搜索
+        search_dirs = [conv_dir]
+        # 也搜一下父级（群聊下搜全群）
+        parent = os.path.dirname(conv_dir)
+        if os.path.exists(parent):
+            search_dirs.append(parent)
+
+        for sdir in search_dirs:
+            if not os.path.exists(sdir):
+                continue
+            for root, _, files in os.walk(sdir):
+                for fname in sorted(files):
+                    if not fname.endswith(".txt"):
+                        continue
+                    fpath = os.path.join(root, fname)
+                    try:
+                        with open(fpath, "r", encoding="utf-8") as f:
+                            for line in f:
+                                if keyword in line:
+                                    rel = os.path.relpath(fpath, self.data_root)
+                                    results.append(f"[{rel}] {line.strip()}")
+                                    if len(results) >= 20:
+                                        break
+                    except Exception:
+                        continue
+                if len(results) >= 20:
+                    break
+
+        if not results:
+            yield event.plain_result(f"没有找到包含「{keyword}」的内容喵~ &&sad&&")
+        else:
+            msg = f"🔍 找到 {len(results)} 条包含「{keyword}」的内容：\n\n"
+            msg += "\n".join(results[:20])
+            if len(results) > 20:
+                msg += f"\n\n...还有 {len(results)-20} 条未显示"
+            yield event.plain_result(msg)
+
+    @filter.command("saver_write")
+    async def saver_write(self, event: AstrMessageEvent, content: str):
+        """手动写入一条事件到存档"""
+        content = content.strip()
+        if not content:
+            yield event.plain_result("要写点什么呢喵？&&confused&&")
+            return
+
+        conv_dir, conv_type, _ = self._get_conv_dir(event)
+        # 手动写入跳过去重和过滤
+        fpath = self._get_next_file(conv_dir)
+        now = datetime.now().strftime("%H:%M:%S")
+        line = f"[{now}] 📝 手动记录: {content}\n"
+        try:
+            with open(fpath, "a", encoding="utf-8") as f:
+                f.write(line)
+            yield event.plain_result(f"✅ 已手动记录事件到存档喵~")
+        except Exception as e:
+            yield event.plain_result(f"❌ 保存失败: {str(e)}")
+
+    @filter.command("saver_today")
+    async def saver_today(self, event: AstrMessageEvent):
+        """查看今天的存档内容"""
+        conv_dir, conv_type, conv_id = self._get_conv_dir(event)
+        today = date.today().isoformat()
+
+        # 搜索今天的文件
+        lines = []
+        if os.path.exists(conv_dir):
+            for fname in sorted(os.listdir(conv_dir)):
+                if fname.startswith(today) and fname.endswith(".txt"):
+                    fpath = os.path.join(conv_dir, fname)
+                    try:
+                        with open(fpath, "r", encoding="utf-8") as f:
+                            for line in f:
+                                lines.append(line.strip())
+                    except Exception:
+                        continue
+
+        if not lines:
+            # 也看看父级目录
+            parent = os.path.dirname(conv_dir)
+            if os.path.exists(parent):
+                for root, _, files in os.walk(parent):
+                    for fname in sorted(files):
+                        if fname.startswith(today) and fname.endswith(".txt"):
+                            fpath = os.path.join(root, fname)
+                            try:
+                                with open(fpath, "r", encoding="utf-8") as f:
+                                    for line in f:
+                                        lines.append(line.strip())
+                            except Exception:
+                                continue
+
+        if not lines:
+            yield event.plain_result("今天还没有存档记录喵~ &&sleep&&")
+            return
+
+        # 限制长度
+        text = "\n".join(lines)
+        if len(text) > 1500:
+            text = text[:1500] + "\n\n...(剩余内容已截断)"
+
+        yield event.plain_result(f"📋 今日存档 ({today})：\n\n{text}")
+
+    @filter.command("saver_summary")
+    async def saver_summary(self, event: AstrMessageEvent):
+        """手动触发今日总结"""
+        yield event.plain_result("🔮 正在生成今日总结，请稍等喵~")
+
+        conv_dir, conv_type, conv_id = self._get_conv_dir(event)
+        today = date.today().isoformat()
+
+        # 收集今天的对话
+        all_content = []
+        search_dirs = [conv_dir]
+        parent = os.path.dirname(conv_dir)
+        if os.path.exists(parent):
+            search_dirs.append(parent)
+
+        for sdir in search_dirs:
+            if not os.path.exists(sdir):
+                continue
+            for fname in sorted(os.listdir(sdir)):
+                if fname.startswith(today) and fname.endswith(".txt"):
+                    fpath = os.path.join(sdir, fname)
+                    try:
+                        with open(fpath, "r", encoding="utf-8") as f:
+                            all_content.append(f.read())
+                    except Exception:
+                        continue
+
+        if not all_content:
+            yield event.plain_result("今天还没有对话记录可以总结喵~ &&sad&&")
+            return
+
+        full_content = "\n".join(all_content)
+        # 限制长度
+        if len(full_content) > 3000:
+            full_content = full_content[:3000] + "\n\n...(截断)"
+
+        summary = await self._get_provider_and_summarize(full_content, self.summary_prompt)
+
+        # 保存总结
+        summary_dir = os.path.join(self.data_root, "_summaries")
+        os.makedirs(summary_dir, exist_ok=True)
+        summary_file = os.path.join(summary_dir, f"{today}_summary.txt")
+        try:
+            with open(summary_file, "a", encoding="utf-8") as f:
+                f.write(f"\n=== {datetime.now().strftime('%Y-%m-%d %H:%M')} 总结 ===\n")
+                f.write(summary + "\n")
+        except Exception as e:
+            logger.error(f"[ChatSaver] 保存总结失败: {e}")
+
+        yield event.plain_result(f"📊 今日对话总结：\n\n{summary}")
+
+    @filter.command("saver_stats")
+    async def saver_stats(self, event: AstrMessageEvent):
+        """查看存档统计信息"""
+        total_files = 0
+        total_size = 0
+        dirs = []
+
+        for root, dirnames, files in os.walk(self.data_root):
+            for f in files:
+                if f.endswith(".txt"):
+                    total_files += 1
+                    fpath = os.path.join(root, f)
+                    total_size += os.path.getsize(fpath)
+            # 记录非隐藏目录
+            rel = os.path.relpath(root, self.data_root)
+            if rel != "." and not rel.startswith("_"):
+                dirs.append(rel)
+
+        size_str = f"{total_size / 1024:.1f} KB" if total_size < 1024 * 1024 else f"{total_size / 1024 / 1024:.1f} MB"
+        dir_count = len(set(dirs))
+
+        msg = (
+            f"📊 存档统计\n"
+            f"• 存档目录: {self.data_root}\n"
+            f"• 总文件数: {total_files}\n"
+            f"• 总大小: {size_str}\n"
+            f"• 会话数: {dir_count}\n"
+            f"• 单文件上限: {self.max_file_size // 1024} KB\n"
+            f"• 去重: {'✅' if self.enable_dedup else '❌'}\n"
+            f"• 每日总结: {'✅' if self.enable_daily_summary else '❌'}"
+        )
+        yield event.plain_result(msg)
+
+    # ===================== LLM工具 =====================
+
+    @filter.llm_tool("search_chat_history")
+    async def search_chat_history(self, event: AstrMessageEvent, keyword: str):
+        """搜索已保存的对话记录。
+
+当你需要回忆之前聊过什么内容时，使用此工具搜索关键词。
+
+Args:
+    keyword(string): 要搜索的关键词"""
+        results = []
+        for root, _, files in os.walk(self.data_root):
+            for fname in sorted(files, reverse=True):
+                if not fname.endswith(".txt"):
+                    continue
+                fpath = os.path.join(root, fname)
+                try:
+                    with open(fpath, "r", encoding="utf-8") as f:
+                        for line in f:
+                            if keyword in line:
+                                rel = os.path.relpath(fpath, self.data_root)
+                                results.append(f"[{rel}] {line.strip()}")
+                                if len(results) >= 15:
+                                    break
+                except Exception:
+                    continue
+                if len(results) >= 15:
+                    break
+            if len(results) >= 15:
+                break
+
+        if not results:
+            return f"没有找到包含「{keyword}」的存档记录。"
+        return f"找到 {len(results)} 条相关记录：\n" + "\n".join(results[:15])
+
+    @filter.llm_tool("write_chat_event")
+    async def write_chat_event(self, event: AstrMessageEvent, content: str):
+        """手动记录一个重要的事件或信息到对话存档中，方便日后回忆。
+
+Args:
+    content(string): 要记录的事件内容"""
+        conv_dir, conv_type, conv_id = self._get_conv_dir(event)
+        fpath = self._get_next_file(conv_dir)
+        now = datetime.now().strftime("%H:%M:%S")
+        line = f"[{now}] 🤖 AI记录: {content}\n"
+        try:
+            with open(fpath, "a", encoding="utf-8") as f:
+                f.write(line)
+            return f"✅ 已成功记录事件到存档。"
+        except Exception as e:
+            return f"❌ 记录失败: {str(e)}"
+
+    @filter.llm_tool("get_today_history")
+    async def get_today_history(self, event: AstrMessageEvent):
+        """【获取今日对话】获取今天的对话存档内容，用于回顾今天聊了什么。无需参数。"""
+        conv_dir, conv_type, conv_id = self._get_conv_dir(event)
+        today = date.today().isoformat()
+
+        lines = []
+        search_dirs = [conv_dir]
+        parent = os.path.dirname(conv_dir)
+        if os.path.exists(parent):
+            search_dirs.append(parent)
+
+        for sdir in search_dirs:
+            if not os.path.exists(sdir):
+                continue
+            for fname in sorted(os.listdir(sdir)):
+                if fname.startswith(today) and fname.endswith(".txt"):
+                    fpath = os.path.join(sdir, fname)
+                    try:
+                        with open(fpath, "r", encoding="utf-8") as f:
+                            for line in f:
+                                lines.append(line.strip())
+                    except Exception:
+                        continue
+
+        if not lines:
+            return "今天还没有存档记录。"
+
+        text = "\n".join(lines)
+        if len(text) > 2000:
+            text = text[:2000] + "\n\n...(截断)"
+        return f"📋 今日存档 ({today})：\n\n{text}"
+
+    # ===================== 定时任务 =====================
+
+    async def _daily_summary_task(self):
+        """每日0点执行的总结任务"""
+        if not self.enable_daily_summary:
+            return
+        try:
+            yesterday = date.today() - timedelta(days=1)
+            date_prefix = yesterday.isoformat()
+            # 遍历所有会话目录做总结
+            for conv_type in ["私聊", "群聊"]:
+                type_dir = os.path.join(self.data_root, conv_type)
+                if not os.path.exists(type_dir):
+                    continue
+                for session_dir in os.listdir(type_dir):
+                    session_path = os.path.join(type_dir, session_dir)
+                    if not os.path.isdir(session_path):
+                        continue
+
+                    # 收集当天所有原始行
+                    raw_lines = []
+                    if conv_type == "群聊":
+                        for member_dir in sorted(os.listdir(session_path)):
+                            member_path = os.path.join(session_path, member_dir)
+                            if not os.path.isdir(member_path):
+                                continue
+                            for fname in sorted(os.listdir(member_path)):
+                                if fname.endswith(".txt") and fname.startswith(date_prefix):
+                                    try:
+                                        with open(os.path.join(member_path, fname), "r", encoding="utf-8") as f:
+                                            for line in f:
+                                                line = line.rstrip("\n\r")
+                                                if line:
+                                                    raw_lines.append(line)
+                                    except Exception:
+                                        continue
+                    else:
+                        for fname in sorted(os.listdir(session_path)):
+                            if fname.endswith(".txt") and fname.startswith(date_prefix):
+                                try:
+                                    with open(os.path.join(session_path, fname), "r", encoding="utf-8") as f:
+                                        for line in f:
+                                            line = line.rstrip("\n\r")
+                                            if line:
+                                                raw_lines.append(line)
+                                except Exception:
+                                    continue
+
+                    if not raw_lines:
+                        continue
+
+                    # 按时间段分批：每段不超过1500字符
+                    chunks = []
+                    current_chunk = []
+                    current_len = 0
+                    for line in raw_lines:
+                        if current_len + len(line) + 1 > 1500 and current_chunk:
+                            chunks.append("\n".join(current_chunk))
+                            current_chunk = [line]
+                            current_len = len(line)
+                        else:
+                            current_chunk.append(line)
+                            current_len += len(line) + 1
+                    if current_chunk:
+                        chunks.append("\n".join(current_chunk))
+
+                    # 对每个时间段分别总结
+                    mini_summaries = []
+                    for i, chunk in enumerate(chunks):
+                        seg_prompt = f"请对以下时段{i+1}的对话内容进行简要总结，提取重要事件和关键信息，简洁明了"
+                        seg_summary = await self._get_provider_and_summarize(chunk, seg_prompt)
+                        if seg_summary:
+                            mini_summaries.append(seg_summary)
+                        await asyncio.sleep(0.5)
+
+                    # 合并各时段总结
+                    if len(mini_summaries) == 1:
+                        summary = mini_summaries[0]
+                    else:
+                        merge_text = ""
+                        for i, ms in enumerate(mini_summaries):
+                            merge_text += f"--- 时段{i+1} ---\n{ms}\n\n"
+                        summary = await self._get_provider_and_summarize(
+                            merge_text,
+                            "请合并以下各时段的总结，形成一份完整连贯的每日对话总结，按时间顺序整理，标注涉及的人。"
+                        )
+                        if not summary:
+                            summary = "\n".join(mini_summaries)
+
+                    # === 保存总结到 _summaries ===
+                    summary_dir = os.path.join(self.data_root, "_summaries")
+                    os.makedirs(summary_dir, exist_ok=True)
+                    sf = os.path.join(summary_dir, f"{yesterday}_{session_dir}_summary.txt")
+                    with open(sf, "w", encoding="utf-8") as f:
+                        f.write(f"\n=== {datetime.now().strftime('%Y-%m-%d %H:%M')} ===")
+                        f.write(f"\n📁 {conv_type}/{session_dir}\n")
+                        f.write(summary + "\n")
+
+                    # === 保存原始记录到长期存档 ===
+                    await self._save_to_longterm(conv_type, session_dir, yesterday)
+
+                    logger.info(f"[ChatSaver] 已总结 {conv_type}/{session_dir}")
+                    await asyncio.sleep(1)
+
+            # === 清理超过保留天数的原始记录 ===
+            self._cleanup_old_records()
+
+            logger.info("[ChatSaver] 每日总结完成")
+        except Exception as e:
+            logger.error(f"[ChatSaver] 每日总结任务失败: {e}")
+
+    async def _save_to_longterm(self, conv_type: str, session_dir: str, record_date: date):
+        """将当天的原始对话记录复制到长期存档目录"""
+        session_path = os.path.join(self.data_root, conv_type, session_dir)
+        if not os.path.exists(session_path):
+            return
+
+        date_str = record_date.isoformat()
+        target_base = os.path.join(self.longterm_dir, conv_type, session_dir)
+        os.makedirs(target_base, exist_ok=True)
+
+        if conv_type == "群聊":
+            for member_dir in os.listdir(session_path):
+                member_path = os.path.join(session_path, member_dir)
+                if not os.path.isdir(member_path):
+                    continue
+                target_member = os.path.join(target_base, member_dir)
+                os.makedirs(target_member, exist_ok=True)
+                for fname in os.listdir(member_path):
+                    if fname.startswith(date_str) and fname.endswith(".txt"):
+                        src = os.path.join(member_path, fname)
+                        dst = os.path.join(target_member, fname)
+                        try:
+                            import shutil
+                            shutil.copy2(src, dst)
+                        except Exception as e:
+                            logger.error(f"[ChatSaver] 长期存档复制失败 {src}: {e}")
+        else:
+            for fname in os.listdir(session_path):
+                if fname.startswith(date_str) and fname.endswith(".txt"):
+                    src = os.path.join(session_path, fname)
+                    dst = os.path.join(target_base, fname)
+                    try:
+                        import shutil
+                        shutil.copy2(src, dst)
+                    except Exception as e:
+                        logger.error(f"[ChatSaver] 长期存档复制失败 {src}: {e}")
+
+        logger.info(f"[ChatSaver] 已保存 {conv_type}/{session_dir} 的原始记录到长期存档")
+
+    def _cleanup_old_records(self):
+        """清理超过保留天数的原始对话记录"""
+        today = date.today()
+
+        for conv_type in ["私聊", "群聊"]:
+            type_dir = os.path.join(self.data_root, conv_type)
+            if not os.path.exists(type_dir):
+                continue
+            for session_dir in os.listdir(type_dir):
+                session_path = os.path.join(type_dir, session_dir)
+                if not os.path.isdir(session_path):
+                    continue
+
+                if conv_type == "群聊":
+                    for member_dir in os.listdir(session_path):
+                        member_path = os.path.join(session_path, member_dir)
+                        if not os.path.isdir(member_path):
+                            continue
+                        for fname in list(os.listdir(member_path)):
+                            self._delete_if_expired(member_path, fname, today)
+                else:
+                    for fname in list(os.listdir(session_path)):
+                        self._delete_if_expired(session_path, fname, today)
+
+    def _delete_if_expired(self, dir_path: str, fname: str, today: date):
+        """如果文件超过保留天数则删除"""
+        if not fname.endswith(".txt"):
+            return
+        try:
+            file_date_str = fname.split("_")[0]
+            file_date = datetime.strptime(file_date_str, "%Y-%m-%d").date()
+            if (today - file_date).days > self.retention_days:
+                fpath = os.path.join(dir_path, fname)
+                os.remove(fpath)
+                logger.info(f"[ChatSaver] 已清理过期记录: {fpath}")
+        except (ValueError, IndexError):
+            pass
+
+# ===================== 三级记忆系统 =====================
+import json, time, re, shutil
+from datetime import datetime, timedelta
+from typing import List, Dict, Optional
+from astrbot.api import llm_tool
+
+class MemoryManager:
+    """三级记忆管理器"""
+    def __init__(self, plugin):
+        self.plugin = plugin
+        self.memory_dir = os.path.join(plugin.data_root, "_memory")
+        os.makedirs(self.memory_dir, exist_ok=True)
+        # 三级记忆目录
+        for level in ["stm", "ltm", "pm"]:
+            os.makedirs(os.path.join(self.memory_dir, level), exist_ok=True)
+
+    def _get_user_memory_file(self, session_id: str, level: str) -> str:
+        return os.path.join(self.memory_dir, level, f"{session_id}.json")
+
+    def _load_memories(self, session_id: str, level: str) -> List[dict]:
+        path = self._get_user_memory_file(session_id, level)
+        if os.path.exists(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except:
+                return []
+        return []
+
+    def _save_memories(self, session_id: str, level: str, memories: List[dict]):
+        path = self._get_user_memory_file(session_id, level)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(memories, f, ensure_ascii=False, indent=2)
+
+    def add_memory(self, session_id: str, content: str, level: str = "stm", source: str = "", importance: int = 1):
+        """添加一条记忆"""
+        memories = self._load_memories(session_id, level)
+        # 去重检查
+        for m in memories:
+            if m["content"] == content:
+                m["last_access"] = time.time()
+                m["access_count"] = m.get("access_count", 0) + 1
+                self._save_memories(session_id, level, memories)
+                return
+        memories.append({
+            "content": content,
+            "source": source,
+            "importance": importance,
+            "created_at": time.time(),
+            "last_access": time.time(),
+            "access_count": 1,
+            "level": level
+        })
+        self._save_memories(session_id, level, memories)
+
+    def get_all_memories(self, session_id: str) -> Dict[str, List[dict]]:
+        """获取用户的所有记忆"""
+        return {
+            "stm": self._load_memories(session_id, "stm"),
+            "ltm": self._load_memories(session_id, "ltm"),
+            "pm": self._load_memories(session_id, "pm")
+        }
+
+    def search_memories(self, session_id: str, keyword: str, top_k: int = 5) -> List[dict]:
+        """关键词搜索记忆"""
+        results = []
+        for level in ["pm", "ltm", "stm"]:
+            memories = self._load_memories(session_id, level)
+            for m in memories:
+                if keyword.lower() in m["content"].lower():
+                    m["_level"] = level
+                    results.append(m)
+        results.sort(key=lambda x: ({"pm": 3, "ltm": 2, "stm": 1}[x.get("_level", "stm")], x.get("access_count", 0)), reverse=True)
+        return results[:top_k]
+
+    def consolidate(self, session_id: str):
+        """记忆巩固：stm→ltm，基于访问频率和重要性"""
+        stm = self._load_memories(session_id, "stm")
+        ltm = self._load_memories(session_id, "ltm")
+        now = time.time()
+        promoted = []
+        remaining = []
+        for m in stm:
+            age_hours = (now - m["created_at"]) / 3600
+            # 超过2小时且访问>=3次，或重要性>=3，升级到ltm
+            if (age_hours > 2 and m.get("access_count", 0) >= 3) or m.get("importance", 0) >= 3:
+                m["level"] = "ltm"
+                m["promoted_at"] = now
+                promoted.append(m)
+            else:
+                remaining.append(m)
+        self._save_memories(session_id, "stm", remaining)
+        ltm.extend(promoted)
+        self._save_memories(session_id, "ltm", ltm)
+        if promoted:
+            logger.info(f"[Memory] 巩固了 {len(promoted)} 条记忆: STM→LTM")
+
+    def auto_remember(self, session_id: str, text: str):
+        """自动从对话中提取重要内容作为短期记忆"""
+        # 检测用户明确要求记住的内容
+        remember_patterns = [
+            r"(?:记住|记好了|别忘了|记着|牢记)[：:](.+?)(?:[。！？!?.]|$)",
+            r"(?:我是|我叫|我的名字是|我的[叫称呼])(.+?)(?:[。！？!?.]|$)",
+            r"(?:我喜欢|我爱[好]?|我讨厌|我不喜欢)(.+?)(?:[。！？!?.]|$)",
+        ]
+        for p in remember_patterns:
+            match = re.search(p, text)
+            if match:
+                content = match.group(1).strip()
+                if len(content) > 3:
+                    self.add_memory(session_id, content, level="stm", source=text, importance=2)
+                    return content
+        return None
+
+    def get_memory_context(self, session_id: str, max_chars: int = 500) -> str:
+        """生成记忆上下文供AI使用"""
+        all_mem = self.get_all_memories(session_id)
+        parts = []
+        if all_mem["pm"]:
+            parts.append("【永久记忆】" + "；".join([m["content"] for m in all_mem["pm"]]))
+        if all_mem["ltm"]:
+            parts.append("【长期记忆】" + "；".join([m["content"] for m in all_mem["ltm"][-5:]]))
+        if all_mem["stm"]:
+            parts.append("【近期记忆】" + "；".join([m["content"] for m in all_mem["stm"][-3:]]))
+        context = "\n".join(parts)
+        if len(context) > max_chars:
+            context = context[:max_chars] + "..."
+        return context
+
+# 初始化记忆管理器
+_memory_mgr = None
+
+def get_memory_mgr(plugin=None):
+    global _memory_mgr
+    if _memory_mgr is None and plugin:
+        _memory_mgr = MemoryManager(plugin)
+    return _memory_mgr
+
+# ---- AI可调用的记忆检索工具 ----
+@llm_tool(name="search_memory", description="搜索对话历史中的记忆，获取关于某个话题或关键词的历史信息")
+async def search_memory(event: AstrMessageEvent, keyword: str = None) -> str:
+    """搜索记忆，获取关于某个话题或关键词的历史信息"""
+    try:
+        session_id = event.unified_msg_origin
+        mgr = get_memory_mgr()
+        if not mgr or not keyword:
+            return "暂无相关记忆"
+        results = mgr.search_memories(session_id, keyword)
+        if not results:
+            return f"没有找到关于「{keyword}」的记忆"
+        lines = [f"关于「{keyword}」的记忆："]
+        for i, m in enumerate(results, 1):
+            level_tag = {"pm": "📌永久", "ltm": "📦长期", "stm": "💭短期"}.get(m.get("_level", "stm"), "💭")
+            lines.append(f"{i}. [{level_tag}] {m['content']}")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"检索记忆失败: {e}"
+
+@llm_tool(name="remember_this", description="记住一条重要信息，AI主动将重要信息存入记忆")
+async def remember_this(event: AstrMessageEvent, content: str = None, importance: int = 1) -> str:
+    """记住一条重要信息，AI主动将重要信息存入记忆"""
+    try:
+        if not content:
+            return "请提供要记住的内容"
+        session_id = event.unified_msg_origin
+        mgr = get_memory_mgr()
+        if mgr:
+            mgr.add_memory(session_id, content, level="stm", source="ai_remember", importance=min(importance, 5))
+            return f"已记住: {content}"
+        return "记忆系统未初始化"
+    except Exception as e:
+        return f"记忆失败: {e}"
+
+# ---- 在ChatSaverPlugin中注入记忆功能 ----
+# 保存原有初始化，添加记忆管理器初始化
+_original_init = ChatSaverPlugin.__init__
+def _patched_init(self, context, config=None):
+    _original_init(self, context, config)
+    self.memory = MemoryManager(self)
+    global _memory_mgr
+    _memory_mgr = self.memory
+    logger.info("[Memory] 三级记忆系统已初始化")
+ChatSaverPlugin.__init__ = _patched_init
+
+# 添加记忆相关命令
+@filter.command("记忆")
+async def cmd_memory(self, event: AstrMessageEvent):
+    """查看记忆"""
+    session_id = event.unified_msg_origin
+    all_mem = self.memory.get_all_memories(session_id)
+    lines = ["🧠 我的记忆："]
+    if all_mem["pm"]:
+        lines.append(f"\n📌 永久记忆 ({len(all_mem['pm'])}条):")
+        for m in all_mem["pm"][-5:]:
+            lines.append(f"  • {m['content']}")
+    if all_mem["ltm"]:
+        lines.append(f"\n📦 长期记忆 ({len(all_mem['ltm'])}条):")
+        for m in all_mem["ltm"][-5:]:
+            lines.append(f"  • {m['content']}")
+    if all_mem["stm"]:
+        lines.append(f"\n💭 短期记忆 ({len(all_mem['stm'])}条):")
+        for m in all_mem["stm"][-3:]:
+            lines.append(f"  • {m['content']}")
+    if not any(all_mem.values()):
+        lines.append("  暂无记忆，多和我聊天吧~")
+    yield event.plain_result("\n".join(lines))
+
+@filter.command("记住")
+async def cmd_remember(self, event: AstrMessageEvent):
+    """让AI永久记住某件事"""
+    text = event.message_str.strip()
+    content = text[3:].strip() if len(text) > 2 else ""
+    if not content:
+        yield event.plain_result("要记住什么呀？例如：/记住 我喜欢吃草莓")
+        return
+    session_id = event.unified_msg_origin
+    self.memory.add_memory(session_id, content, level="pm", source="user_command", importance=5)
+    yield event.plain_result(f"📌 已经永久记住了：{content}")
+
+@filter.command("忘记")
+async def cmd_forget(self, event: AstrMessageEvent):
+    """忘记某条记忆"""
+    text = event.message_str.strip()
+    keyword = text[3:].strip() if len(text) > 2 else ""
+    if not keyword:
+        yield event.plain_result("要忘记什么呀？例如：/忘记 草莓")
+        return
+    session_id = event.unified_msg_origin
+    deleted = 0
+    for level in ["pm", "ltm", "stm"]:
+        memories = self.memory._load_memories(session_id, level)
+        new_mems = [m for m in memories if keyword not in m["content"]]
+        deleted += len(memories) - len(new_mems)
+        self.memory._save_memories(session_id, level, new_mems)
+    yield event.plain_result(f"已删除 {deleted} 条包含「{keyword}」的记忆")
+
+# 注入消息处理钩子，自动提取记忆
+_original_on_message = ChatSaverPlugin.on_message if hasattr(ChatSaverPlugin, 'on_message') else None
+
+# 添加记忆巩固定时任务
+async def _memory_consolidation_task(self):
+    """定期巩固记忆"""
+    while True:
+        await asyncio.sleep(3600)  # 每小时巩固一次
+        try:
+            mem_dir = os.path.join(self.data_root, "_memory", "stm")
+            if os.path.exists(mem_dir):
+                for fname in os.listdir(mem_dir):
+                    if fname.endswith(".json"):
+                        session_id = fname.replace(".json", "")
+                        self.memory.consolidate(session_id)
+        except Exception as e:
+            logger.error(f"[Memory] 巩固任务失败: {e}")
+
+# 启动巩固任务
+import asyncio
+if not hasattr(ChatSaverPlugin, '_consolidation_started'):
+    async def _start_consolidation(self):
+        await asyncio.sleep(30)  # 延迟30秒启动
+        await self._memory_consolidation_task()
+    ChatSaverPlugin._consolidation_started = True
+    # 用asyncio.create_task启动
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            asyncio.create_task(_start_consolidation(None))
+    except:
+        pass

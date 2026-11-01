@@ -1,0 +1,5 @@
+name: astrbot_plugin_sponsor
+desc: 赞助小伊，返回可爱图片
+help: 发送指令 赞助小伊
+version: v1.0.1
+author: 小伊
