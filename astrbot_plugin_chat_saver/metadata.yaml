@@ -3,4 +3,4 @@ display_name: 对话存档器[ChatSaver]
 desc: 智能对话存档插件，自动保存私聊/群聊文本内容，支持AI检索、AI写入、每日0点AI总结、自动分文件存储，智能去重与重要事件识别。
 version: v1.0.0
 author: 玄的小伊
-repo: ""
+repo: https://github.com/ayinxuan/xiaoyi-astrbot-plugins

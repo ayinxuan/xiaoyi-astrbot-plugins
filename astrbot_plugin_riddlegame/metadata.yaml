@@ -2,6 +2,6 @@ name: astrbot_plugin_riddlegame
 display_name: 小游戏合集本地版
 desc: qq群棋类小游戏 - 本地渲染，去掉军棋，加入测试对局
 version: v1.1.0
-author: 小伊（本地版改写，上游 R1ddle1337）
+author: Riddle
 repo: https://github.com/ayinxuan/xiaoyi-astrbot-plugins
 upstream: https://github.com/R1ddle1337/astrbot_plugin_riddlegame

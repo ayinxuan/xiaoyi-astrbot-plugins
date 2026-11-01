@@ -3,5 +3,6 @@ desc: 画图插件：按技能把中文描述转成 Danbooru tag，叠可切换�
 help: 发送「画 描述」出图；「画师串」查看/切换/新增/删除；「画图状态」查看地址模型密钥
 version: v1.3.0
 author: ayin
-repo: https://github.com/ayinxuan/astrbot_plugin_ayin_paint
+repo: https://github.com/ayinxuan/xiaoyi-astrbot-plugins
+upstream: https://github.com/ayinxuan/astrbot_plugin_ayin_paint
 astrbot_version: ">=4.0.0,<5"

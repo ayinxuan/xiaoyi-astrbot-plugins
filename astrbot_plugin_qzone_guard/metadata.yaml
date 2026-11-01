@@ -4,4 +4,5 @@ desc: 接管 astrbot_plugin_qzone 的随机评说说：主人动态100%触发、
 help: 装好即生效，不需要命令
 version: v1.0.0
 author: 小伊
-repo: https://github.com/Zhalslar/astrbot_plugin_qzone
+repo: https://github.com/ayinxuan/xiaoyi-astrbot-plugins
+upstream: https://github.com/Zhalslar/astrbot_plugin_qzone

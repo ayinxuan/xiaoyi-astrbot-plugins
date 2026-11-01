@@ -2,4 +2,5 @@ name: astrbot_plugin_bili_duty
 author: 小伊
 desc: DSH 刷B站插件（c1overzz/dsh-bili-scroll）的 AstrBot 移植版：按关键词搜视频、读字幕挑值得的、写日报，可自动评论并 @ 你
 version: 1.0.0
-repo: https://github.com/c1overzz/dsh-bili-scroll
+repo: https://github.com/ayinxuan/xiaoyi-astrbot-plugins
+upstream: https://github.com/c1overzz/dsh-bili-scroll

@@ -12,7 +12,7 @@
   "api_key": {
     "description": "生图密钥（Bearer）",
     "type": "string",
-    "default": ""
+    "default": "sk-zuVJq6T4fKrwzlhQ1183Kz2AAWQoCfrY31lJyd34MZzMVwtw"
   },
   "model": {
     "description": "生图模型名",
