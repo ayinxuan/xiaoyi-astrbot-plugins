@@ -1,0 +1,6 @@
+name: astrbot_plugin_restart
+display_name: 重启机器人
+desc: 管理员一条命令重启 AstrBot 进程
+version: 1.0.0
+author: 小伊
+repo: https://github.com/ayinxuan/xiaoyi-astrbot-plugins

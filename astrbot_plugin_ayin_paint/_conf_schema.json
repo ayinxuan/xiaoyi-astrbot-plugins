@@ -1,0 +1,132 @@
+{
+  "request_mode": {
+    "description": "生图接口形态：auto/images/chat（images=OpenAI 图片接口，chat=网关式 chat/completions）",
+    "type": "string",
+    "default": "auto"
+  },
+  "api_url": {
+    "description": "生图请求地址，可填 https://host/v1 或完整 /v1/images/generations、/v1/chat/completions",
+    "type": "string",
+    "default": "https://api.cunzaijiang.cn/v1/chat/completions"
+  },
+  "api_key": {
+    "description": "生图密钥（Bearer）",
+    "type": "string",
+    "default": ""
+  },
+  "model": {
+    "description": "生图模型名",
+    "type": "string",
+    "default": "nai-diffusion-5-full"
+  },
+  "stream": {
+    "description": "chat 模式是否使用 SSE 流式请求",
+    "type": "bool",
+    "default": true
+  },
+  "extra_body": {
+    "description": "额外请求参数（JSON，会合并进请求体，留空则不加）",
+    "type": "text",
+    "default": ""
+  },
+  "size": {
+    "description": "默认出图尺寸（不给比例时兜底），如 1152x2048（2K 手机竖屏）",
+    "type": "string",
+    "default": "1152x2048"
+  },
+  "default_ratio": {
+    "description": "默认出图比例（9:16=手机竖屏），可用「画 9:16 描述」临时覆盖",
+    "type": "string",
+    "default": "9:16"
+  },
+  "chat_size_fields": {
+    "description": "chat 模式往请求体注入尺寸用的字段名，逗号分隔：size,width,height（网关只认其一时可改）",
+    "type": "string",
+    "default": "size,width,height"
+  },
+  "negative_prompt": {
+    "description": "chat 模式负面提示词（留空不传）",
+    "type": "text",
+    "default": ""
+  },
+  "chat_extra_body": {
+    "description": "chat 模式专用额外参数（JSON，如 {\"steps\":28,\"scale\":5,\"sampler\":\"k_euler_ancestral\"}）",
+    "type": "text",
+    "default": ""
+  },
+  "ratio_sizes": {
+    "description": "比例到尺寸映射，每行一条：1:1=2048x2048",
+    "type": "text",
+    "default": "9:16=1152x2048\n3:4=1536x2048\n1:1=2048x2048\n4:3=2048x1536\n16:9=2048x1152\n2:3=1365x2048\n3:2=2048x1365\n21:9=2048x878"
+  },
+  "enable_tag": {
+    "description": "是否先用默认对话模型按技能把描述转成 Danbooru tag 再出图",
+    "type": "bool",
+    "default": true
+  },
+  "skill_path": {
+    "description": "转 tag 所用技能文件路径",
+    "type": "string",
+    "default": "/root/data/skills/cld-danbooru-skill/SKILL.md"
+  },
+  "tag_model": {
+    "description": "转 tag 指定提供商 id（留空使用默认对话模型）",
+    "type": "string",
+    "default": ""
+  },
+  "artist_presets": {
+    "description": "画师串预设，每行一条：名称=内容",
+    "type": "text",
+    "default": "画师串=0.5::artist:cc_lin::,1.7::artist:suzumi_(ccroquette)::,0.2::artist:n_sol::, latest data,-2::artist collaboration,audience::. 1.5::photorealistic::,1.5::year 2025 ::,1.5::year 2026 ::, dramatic lighting\n写实=1.5::photorealistic::,1.5::year 2025 ::,1.5::year 2026 ::, dramatic lighting, soft lighting\n柔光写真=0.5::artist:cc_lin::,1.7::artist:suzumi_(ccroquette)::,0.2::artist:n_sol::, latest data,-2::artist collaboration,audience,A highly finished photo-style artwork that has lively color,graphic texture,realistic skin surface,and lifelike flesh with little obliques::. 1.5::photorealistic::,1.5::year 2025 ::,1.5::year 2026 ::, dramatic lighting"
+  },
+  "active_preset": {
+    "description": "默认启用的画师串名称（可用「画师串 用 xxx」切换）",
+    "type": "string",
+    "default": "画师串"
+  },
+  "count": {
+    "description": "每次出图张数",
+    "type": "int",
+    "default": 1
+  },
+  "timeout": {
+    "description": "生图请求超时（秒）",
+    "type": "int",
+    "default": 180
+  },
+  "keep_files": {
+    "description": "保留的出图文件数量上限",
+    "type": "int",
+    "default": 80
+  },
+  "enable_library": {
+    "description": "出图前是否先查角色收录库（命中直接锁定，重名角色再让 AI 按作品消歧）",
+    "type": "bool",
+    "default": true
+  },
+  "enable_lookup": {
+    "description": "出图前是否联网核对角色（Danbooru 官方角色标签，避免画错人或补错外貌）",
+    "type": "bool",
+    "default": true
+  },
+  "lookup_min_posts": {
+    "description": "角色标签最低投稿数，低于此数视为没匹配上（建议 30-100）",
+    "type": "int",
+    "default": 30
+  },
+  "lookup_max_names": {
+    "description": "最多核对几个角色",
+    "type": "int",
+    "default": 3
+  },
+  "danbooru_base": {
+    "description": "Danbooru 接口地址（被墙可换成镜像）",
+    "type": "string",
+    "default": "https://danbooru.donmai.us"
+  },
+  "search_api_key": {
+    "description": "可选：Tavily 搜索密钥，Danbooru 没查到时用联网搜索补充参考（留空则只用 Danbooru）",
+    "type": "string",
+    "default": ""
+  }
+}

@@ -1,0 +1,26 @@
+{
+    "admin_qq": {
+        "description": "管理员QQ号，用于使用测试对局等管理命令",
+        "type": "string",
+        "default": "",
+        "hint": "填写管理员的QQ号"
+    },
+    "admin_mode": {
+        "description": "是否启用管理员模式",
+        "type": "bool",
+        "default": true,
+        "hint": "关闭后任何人都可使用测试对局命令"
+    },
+    "turn_timeout_seconds": {
+        "description": "每回合思考时间（秒），超时自动认输",
+        "type": "int",
+        "default": 60,
+        "hint": "设为 0 可禁用超时功能"
+    },
+    "join_timeout_seconds": {
+        "description": "等待对手加入超时（秒），超时自动取消游戏",
+        "type": "int",
+        "default": 60,
+        "hint": "设为 0 可禁用此功能"
+    }
+}

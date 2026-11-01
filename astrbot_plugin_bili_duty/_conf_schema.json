@@ -1,0 +1,93 @@
+{
+  "enabled": {
+    "description": "定时自动刷",
+    "type": "bool",
+    "default": true
+  },
+  "run_times": {
+    "description": "每天自动跑的时间点（24 小时制，逗号分隔）",
+    "type": "string",
+    "default": "12:30,21:00"
+  },
+  "keywords": {
+    "description": "关注关键词（一行一个）",
+    "type": "list",
+    "default": [
+      "AI Agent",
+      "编程",
+      "DeepSeek"
+    ]
+  },
+  "search_size": {
+    "description": "每个关键词搜多少条候选",
+    "type": "int",
+    "default": 8
+  },
+  "daily_pick": {
+    "description": "每天最多挑几条",
+    "type": "int",
+    "default": 3
+  },
+  "scan_limit": {
+    "description": "每轮最多逐个细看多少条（读字幕最费时间）",
+    "type": "int",
+    "default": 8
+  },
+  "max_chars": {
+    "description": "单条字幕最多读多少字",
+    "type": "int",
+    "default": 1500
+  },
+  "report_style": {
+    "description": "日报详细程度",
+    "type": "string",
+    "default": "full",
+    "options": [
+      "full",
+      "brief",
+      "none"
+    ]
+  },
+  "persona": {
+    "description": "它按什么说话（人设提示词，留空则中性）",
+    "type": "text",
+    "default": ""
+  },
+  "auto_comment": {
+    "description": "自动评论并 @ 你",
+    "type": "bool",
+    "default": false
+  },
+  "comment_limit": {
+    "description": "每轮最多评论几条",
+    "type": "int",
+    "default": 1
+  },
+  "at_uid": {
+    "description": "评论要 @ 的 UID（留空则不加 @）",
+    "type": "string",
+    "default": ""
+  },
+  "bili_bin": {
+    "description": "bili-cli 可执行文件路径",
+    "type": "string",
+    "default": "/root/.local/bin/bili"
+  },
+  "provider_id": {
+    "description": "用于挑视频的模型 Provider ID（留空用当前默认）",
+    "type": "string",
+    "default": ""
+  },
+  "target_session": {
+    "description": "日报推送会话（unified_msg_origin，留空则用最近一次对话）",
+    "type": "string",
+    "default": ""
+  },
+  "admin_ids": {
+    "description": "可用命令的管理员 QQ 号（逗号分隔，只有这些 ID 会触发响应）",
+    "type": "list",
+    "default": [
+      "1491867183"
+    ]
+  }
+}

@@ -1,0 +1,25 @@
+{
+    "owner_id": {
+        "description": "主人 QQ",
+        "type": "string",
+        "hint": "填主人的 QQ 号。主人发说说时 100% 触发评论，评论后私聊通知主人",
+        "default": ""
+    },
+    "friend_read_prob": {
+        "description": "好友发说说时的触发概率",
+        "type": "float",
+        "hint": "好友随机触发评说说的概率，只在对方有最新未评论动态时触发；非好友完全不触发",
+        "slider": {
+            "min": 0,
+            "max": 1,
+            "step": 0.01
+        },
+        "default": 0.5
+    },
+    "notify_owner_on_comment": {
+        "description": "评论后私聊通知主人",
+        "type": "bool",
+        "hint": "每次评论完说说，把评论对象和内容私聊发给主人 QQ",
+        "default": true
+    }
+}

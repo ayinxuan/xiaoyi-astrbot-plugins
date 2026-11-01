@@ -1,0 +1,6 @@
+name: astrbot_plugin_greeting
+display_name: 作息问候
+desc: 记录群友睡眠时间并按作息打招呼的问候插件
+version: 1.0.0
+author: 小伊
+repo: https://github.com/ayinxuan/xiaoyi-astrbot-plugins

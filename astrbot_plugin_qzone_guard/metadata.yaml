@@ -1,0 +1,7 @@
+name: astrbot_plugin_qzone_guard
+display_name: QQ空间·评说说守卫（小伊定制）
+desc: 接管 astrbot_plugin_qzone 的随机评说说：主人动态100%触发、好友1/2概率且只看最新未评论动态、非好友完全不碰、每次评论后私聊通知主人
+help: 装好即生效，不需要命令
+version: v1.0.0
+author: 小伊
+repo: https://github.com/Zhalslar/astrbot_plugin_qzone

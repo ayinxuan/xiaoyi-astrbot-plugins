@@ -1,0 +1,8 @@
+{
+  "api_base_url": {
+    "description": "API 实例地址",
+    "type": "string",
+    "default": "https://60s.viki.moe",
+    "hint": "默认 https://60s.viki.moe，可切换为其他公共实例如 https://60api.09cdn.xyz"
+  }
+}

@@ -1,0 +1,5 @@
+name: astrbot_plugin_60s
+author: ayin
+desc: 60s API 全量聚合插件 - 资讯、热搜、天气、翻译、娱乐等 50+ 一站式服务，支持 AI Function Calling
+version: 1.0.0
+repo: https://github.com/vikiboss/60s
